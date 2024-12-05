@@ -1,12 +1,111 @@
-const { obterTokenCSRF, tryPayment, authenticateTwoFactor, verifyTwoFactorCode } = require('../../Handler/authentication');
-const config = require('../../config');
-const { InteractionContextType, SlashCommandBuilder } = require('discord.js');
+require('dotenv').config();
+const { REST, Routes } = require('zoblox.js');
+const OTP = require('otplib');
 const noblox = require('noblox.js');
+const { InteractionContextType, SlashCommandBuilder } = require('discord.js');
+
+const getTOTP = () => OTP.authenticator.generate(process.env.TWOFACTOR);
+
+class PayoutRequestBody {
+
+    static create(userId, amount) {
+
+        return {
+
+            "PayoutType": "FixedAmount",
+            "Recipients": [
+
+                {
+
+                    "recipientId": userId,
+                    "recipientType": "User",
+                    "amount": amount
+
+                },
+
+            ],
+
+        };
+
+    }
+
+}
+
+/** @type {import('zoblox.js').REST} */
+let restInstance = null;
+
+class Rest {
+
+    static get instance() {
+
+        if (!restInstance) {
+
+            restInstance = new REST();
+
+        }
+
+        return restInstance;
+
+    }
+
+    static async setCookie() {
+
+        await restInstance.setCookie(process.env.Cookie);
+
+    }
+
+}
+
+class AsyncPayoutManager {
+
+    static get Rest() {
+
+        return Rest.instance;
+
+    }
+
+    static async UserPayoutEligibility(groupId, userId) {
+
+        const { data } = await AsyncPayoutManager.Rest.get(`https://economy.roblox.com/v1/groups/${groupId}/users-payout-eligibility?userIds=${userId}`);
+
+        return data.usersGroupPayoutEligibility?.[userId.toString()] ? true : false;
+
+    }
+
+    static async PayoutVerify(userId, challengeId, verificationCode, type = "authenticator") {
+
+        const { data } = await AsyncPayoutManager.Rest.post(`https://twostepverification.roblox.com/v1/users/${userId}/challenges/${type}/verify`, {
+
+            challengeId,
+            actionType: "Generic",
+            code: verificationCode,
+
+        });
+
+        return data.verificationToken;
+
+    }
+
+    static async Continue(challengeId, challengeMetaData) {
+
+        const { data } = await AsyncPayoutManager.Rest.post('https://apis.roblox.com/challenge/v1/continue', {
+
+            challengeId,
+            challengeMetaData,
+            challengeType: "twostepverification",
+
+        });
+
+        return data.challengeId;
+
+    }
+
+}
 
 module.exports = {
 
     data: new SlashCommandBuilder()
-    
+
         .setName('pagar')
         .setDescription('Pagar usuário do roblox!')
         .setContexts(InteractionContextType.PrivateChannel)
@@ -26,65 +125,56 @@ module.exports = {
         const groupId = '15979531';
 
         if (interaction.user.id !== '693477503863488584') {
+
             return interaction.reply({ content: '❌ Apenas o proprietário pode usar este comando', ephemeral: true });
+
         }
 
         if (!amount || amount <= 0) {
+
             return interaction.reply({ content: '❌ O valor deve ser maior que 0', ephemeral: true });
+
         }
 
         try {
 
-            // Passo 1: Obter CSRF token
-            await obterTokenCSRF();
+            const userId = await noblox.getIdFromUsername(username);
+            const isEligible = await AsyncPayoutManager.UserPayoutEligibility(groupId, userId);
 
-            // Passo 2: Autenticação 2FA
-            const twoFactorAuthenticated = await authenticateTwoFactor();
+            if (!isEligible) {
 
-            if (!twoFactorAuthenticated) {
-
-                return interaction.editReply({ content: '❌ A autenticação 2FA falhou!' });
+                return interaction.reply({ content: `❌ O usuário ${username} não é elegível para pagamentos do grupo`});
 
             }
 
-            // Passo 3: Tentar realizar o pagamento
-            const paymentResult = await tryPayment(amount, groupId, username);
+            const requestBody = PayoutRequestBody.create(userId, amount);
 
-            // Passo 4: Verificar se o pagamento foi bem-sucedido ou se é necessário um novo desafio
-            if (paymentResult.status === 'pending') {
+            await Rest.setCookie();
 
-                const verificationToken = paymentResult.challengeId;
-                console.log("🚨 Pagamento pendente! Precisamos verificar o código 2FA");
+            try {
 
-                // Passo 5: Verificar o código 2FA
-                const isVerified = await verifyTwoFactorCode(username, verificationToken);
+                await Rest.instance.post(Routes.groups.payouts(groupId), { data: requestBody });
+                return interaction.reply({ content: `✅ Pagamento de ${amount} Robux enviado com sucesso para ${username}` });
 
-                if (!isVerified) {
+            } catch (error) {
 
-                    return interaction.editReply({ content: '❌ Falha ao verificar o código 2FA' });
+                const rblxChallengeId = error.response.headers['rblx-challenge-id'];
+                const rblxChallengeMetadata = JSON.parse(Buffer.from(error.response.headers['rblx-challenge-metadata'], 'base64').toString());
 
-                }
+                const verificationToken = await AsyncPayoutManager.PayoutVerify(userId, rblxChallengeMetadata.challengeId, getTOTP());
+                const metadata = JSON.stringify({
 
-                // Tentando novamente o pagamento após a verificação 2FA
-                const finalResult = await tryPayment(amount, groupId, username);
+                    verificationToken,
+                    rememberDevice: false,
+                    challengeId: rblxChallengeMetadata.challengeId,
 
-                if (finalResult.status === 'success') {
+                });
 
-                    return interaction.editReply({ content: `✅ Pagamento de ${amount} Robux enviado para ${username}` });
+                await AsyncPayoutManager.Continue(rblxChallengeId, metadata);
 
-                } else {
+                await Rest.instance.post(Routes.groups.payouts(groupId), { data: requestBody });
 
-                    return interaction.editReply({ content: '❌ Falha ao processar pagamento após verificação 2FA' });
-
-                }
-
-            } else if (paymentResult.status === 'success') {
-
-                return interaction.editReply({ content: `✅ Pagamento de ${amount} Robux enviado para ${username}` });
-
-            } else {
-
-                return interaction.editReply({ content: '❌ Falha ao processar pagamento' });
+                return interaction.reply({ content: `✅ Pagamento de ${amount} Robux enviado com sucesso para ${username} após validação 2FA` });
 
             }
 
