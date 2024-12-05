@@ -150,7 +150,7 @@ class AsyncPayoutManager {
      * @param {number} userId 
      * @returns {boolean}
      */
-    static async UserPayoutEligibilit(groupId, userId) {
+    static async UserPayoutEligibility(groupId, userId) {
 
         const { data } = await AsyncPayoutManager.Rest.get(`https://economy.roblox.com/v1/groups/${groupId}/users-payout-eligibility?userIds=${userId}`).catch(e => {
 
@@ -348,7 +348,7 @@ module.exports = {
                 ephemeral: true,
 
             });
-            
+
         }
 
     },
