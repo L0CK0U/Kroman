@@ -1,9 +1,8 @@
 require('dotenv').config();
+const { InteractionContextType, SlashCommandBuilder } = require('discord.js');
 const { REST, Routes } = require('zoblox.js');
 const OTP = require('otplib');
 const noblox = require('noblox.js');
-const { InteractionContextType, SlashCommandBuilder } = require('discord.js');
-
 const getTOTP = () => OTP.authenticator.generate(process.env.TWOFACTOR);
 
 class PayoutRequestBody {
@@ -150,15 +149,28 @@ class AsyncPayoutManager {
      * @param {number} userId 
      * @returns {boolean}
      */
-    static async UserPayoutEligibility(groupId, userId) {
+    static async UserPayoutEligibilit(groupId, userId) {
 
-        const { data } = await AsyncPayoutManager.Rest.get(`https://economy.roblox.com/v1/groups/${groupId}/users-payout-eligibility?userIds=${userId}`).catch(e => {
+        try {
 
-            return { data: { usersGroupPayoutEligibility: null } }
+            const { data } = await AsyncPayoutManager.Rest.get(`https://economy.roblox.com/v1/groups/${groupId}/users-payout-eligibility?userIds=${userId}`);
+            
+            // Verifica se a resposta de elegibilidade existe e se o usuário está na lista de elegibilidade
+            if (data && data.usersGroupPayoutEligibility && data.usersGroupPayoutEligibility[userId.toString()]) {
 
-        });
+                return true;  // O usuário é elegível
 
-        return data.usersGroupPayoutEligibility?.[userId.toString()] ? true : false
+            }
+    
+            return false;  // O usuário não é elegível
+
+        } catch (e) {
+
+            console.error('Erro ao consultar a elegibilidade:', e);
+
+            return false;  // Em caso de erro, consideramos o usuário não elegível
+
+        }
 
     }
 
@@ -279,7 +291,9 @@ module.exports = {
         try {
 
             const userId = await noblox.getIdFromUsername(username);
-            const isEligible = await AsyncPayoutManager.UserPayoutEligibility(groupId, userId);
+
+            // Verificando a elegibilidade com a função corrigida
+            const isEligible = await AsyncPayoutManager.UserPayoutEligibilit(groupId, userId);
 
             if (!isEligible) {
 
