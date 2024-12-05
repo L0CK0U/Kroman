@@ -60,43 +60,183 @@ class AsyncPayoutManager {
 
     static get Rest() {
 
-        return Rest.instance;
+        const rest = Rest.instance;
+        return rest;
 
     }
 
-    static async UserPayoutEligibility(groupId, userId) {
+    /**
+     * 
+     * @param {'Generic_TwoStepVerification_Initialized' | 'Generic_TwoStepVerification_Initialized_unknown'} name 
+     * @returns {Promise<{}>}
+     */
+    static async Report(name) {
 
-        const { data } = await AsyncPayoutManager.Rest.get(`https://economy.roblox.com/v1/groups/${groupId}/users-payout-eligibility?userIds=${userId}`);
-
-        return data.usersGroupPayoutEligibility?.[userId.toString()] ? true : false;
+        return await AsyncPayoutManager.Rest.post(`https://assetgame.roblox.com/game/report-event?name=${name}`);
 
     }
 
-    static async PayoutVerify(userId, challengeId, verificationCode, type = "authenticator") {
+    /**
+     * @param {'event_2sv' | 'event_generic'} name 
+     * @returns {Promise<{}>}
+     */
+    static async Record(name) {
 
-        const { data } = await AsyncPayoutManager.Rest.post(`https://twostepverification.roblox.com/v1/users/${userId}/challenges/${type}/verify`, {
+        return await AsyncPayoutManager.Rest.post('https://apis.roblox.com/account-security-service/v1/metrics/record', {
 
-            challengeId,
-            actionType: "Generic",
-            code: verificationCode,
+            data: name === 'event_2sv' ? {
+
+                "name": "event_2sv",
+                "value": 1,
+                "labelValues": {
+
+                    "action_type": "Generic",
+                    "event_type": "Initialized",
+                    "application_type": "unknown"
+
+                }
+
+            } : {
+
+                "name": "event_generic",
+                "value": 1,
+                "labelValues": {
+                    "event_type": "Success",
+                    "challenge_type": "twostepverification"
+
+                }
+
+            }
 
         });
 
-        return data.verificationToken;
+    }
+
+    /**
+    * 
+    * @param {number} userId 
+    * @param {number} ChallengeId 
+    * @returns {Promise<{}>}
+    */
+    static async ChallengeMetaData(userId, ChallengeId) {
+
+        return await AsyncPayoutManager.Rest.get(`https://twostepverification.roblox.com/v1/metadata?userId=${userId}&challengeId=${ChallengeId}&actionType=Generic`);
 
     }
 
-    static async Continue(challengeId, challengeMetaData) {
+    /**
+     * 
+     * @param {string | number} userId 
+     * @param {string} ChallengeId 
+     * @returns {Promise<'email' | 'authenticator' | 'sms' | 'security-key'>}
+     */
+    static async ChallangeConfiguration(userId, ChallengeId) {
 
-        const { data } = await AsyncPayoutManager.Rest.post('https://apis.roblox.com/challenge/v1/continue', {
+        return new Promise((ProcessingInvokeingFunc, PromiseRejectionFunc) => {
 
-            challengeId,
-            challengeMetaData,
-            challengeType: "twostepverification",
+            AsyncPayoutManager.Rest.get(`https://twostepverification.roblox.com/v1/users/${userId}/configuration?challengeId=${ChallengeId}&actionType=Generic`).then(({ data }) => {
+
+                ProcessingInvokeingFunc(data.primaryMediaType.toLowerCase())
+
+            }).catch(PromiseRejectionFunc)
+
+        })
+
+    }
+
+    /**
+     * 
+     * @param {number} groupId 
+     * @param {number} userId 
+     * @returns {boolean}
+     */
+    static async UserPayoutEligibilit(groupId, userId) {
+
+        const { data } = await AsyncPayoutManager.Rest.get(`https://economy.roblox.com/v1/groups/${groupId}/users-payout-eligibility?userIds=${userId}`).catch(e => {
+
+            return { data: { usersGroupPayoutEligibility: null } }
 
         });
 
-        return data.challengeId;
+        return data.usersGroupPayoutEligibility?.[userId.toString()] ? true : false
+
+    }
+
+    /**
+     * 
+     * @param {number | string} userId 
+     * @param {string} ChallengeId 
+     * @param {number | string} verificationCode 
+     * @param {'email' | 'authenticator' | 'sms' | 'security-key'} type 
+     * @returns {Promise<string>}
+     */
+    static async PayoutVerify(userId, ChallengeId, verificationCode, type = "authenticator") {
+
+        return new Promise((resolve, reject) => {
+
+            AsyncPayoutManager.Rest.post(`https://twostepverification.roblox.com/v1/users/${userId}/challenges/${type}/verify`, {
+
+                data: {
+
+                    ChallengeId,
+                    actionType: 'Generic',
+                    code: verificationCode,
+
+                }
+
+            }).then(response => {
+
+                if (response && response.data) {
+
+                    resolve(response.data.verificationToken);
+
+                } else {
+
+                    reject(new Error('Unexpected response format.'));
+
+                }
+
+            }).catch(({ response }) => {
+
+                const errors = response?.data?.errors || [];
+
+                if (errors.find(e => e.code === 1)) reject(new Error('Invalid challenge ID.'));
+                else if (errors.find(e => e.code === 5)) reject(new Error('Too many requests.'));
+                else if (errors.find(e => e.code === 9)) reject(new Error('The two step verification configuration is invalid for this action.'));
+                else if (errors.find(e => e.code === 10)) reject(new Error('The two step verification challenge code is invalid. Please check the TOTP code and try again.'));
+                else reject(new Error('(Unknown Error Code) Two step verification is currently under maintenance'));
+
+            });
+
+        });
+
+    }
+
+    /**
+     * 
+     * @param {string} ChallengeId 
+     * @param {string} ChallengeMetaData 
+     * @returns {Promise<string>}
+     */
+    static async Continue(ChallengeId, ChallengeMetaData) {
+
+        return new Promise((ProcessingInvokeingFunc, PromiseRejectionFunc) => {
+
+            AsyncPayoutManager.Rest.post('https://apis.roblox.com/challenge/v1/continue', {
+
+                data: {
+
+                    ChallengeId,
+                    ChallengeMetaData,
+                    ChallengeType: "twostepverification"
+
+                }
+
+            }).then(({ data }) => ProcessingInvokeingFunc(data.challengeId))
+
+                .catch(PromiseRejectionFunc)
+
+        })
 
     }
 
@@ -143,7 +283,7 @@ module.exports = {
 
             if (!isEligible) {
 
-                return interaction.reply({ content: `❌ O usuário ${username} não é elegível para pagamentos do grupo`});
+                return interaction.reply({ content: `❌ O usuário ${username} não é elegível para pagamentos do grupo` });
 
             }
 
@@ -154,14 +294,30 @@ module.exports = {
             try {
 
                 await Rest.instance.post(Routes.groups.payouts(groupId), { data: requestBody });
-                return interaction.reply({ content: `✅ Pagamento de ${amount} Robux enviado com sucesso para ${username}` });
+
+                return interaction.reply({
+
+                    content: `✅ Pagamento de ${amount} Robux enviado com sucesso para ${username}`
+
+                });
 
             } catch (error) {
 
                 const rblxChallengeId = error.response.headers['rblx-challenge-id'];
-                const rblxChallengeMetadata = JSON.parse(Buffer.from(error.response.headers['rblx-challenge-metadata'], 'base64').toString());
+                const rblxChallengeMetadata = JSON.parse(
 
-                const verificationToken = await AsyncPayoutManager.PayoutVerify(userId, rblxChallengeMetadata.challengeId, getTOTP());
+                    Buffer.from(error.response.headers['rblx-challenge-metadata'], 'base64').toString()
+
+                );
+
+                const verificationToken = await AsyncPayoutManager.PayoutVerify(
+
+                    userId,
+                    rblxChallengeMetadata.challengeId,
+                    getTOTP()
+
+                );
+
                 const metadata = JSON.stringify({
 
                     verificationToken,
@@ -174,7 +330,11 @@ module.exports = {
 
                 await Rest.instance.post(Routes.groups.payouts(groupId), { data: requestBody });
 
-                return interaction.reply({ content: `✅ Pagamento de ${amount} Robux enviado com sucesso para ${username} após validação 2FA` });
+                return interaction.reply({
+
+                    content: `✅ Pagamento de ${amount} Robux enviado com sucesso para ${username} após validação 2FA`
+
+                });
 
             }
 
@@ -182,23 +342,13 @@ module.exports = {
 
             console.error('❌ Erro ao realizar o pagamento:', error);
 
-            // Se o pagamento falhou devido a um erro de segurança ou outro motivo
-            if (error.message.includes('Challenge')) {
+            return interaction.reply({
 
-                return interaction.editReply({
-
-                    content: `❌ O pagamento foi bloqueado pelo Roblox devido a desafios de segurança. Certifique-se de que a conta esteja autorizada`,
-
-                });
-
-            }
-
-            return interaction.editReply({
-
-                content: `❌ Erro ao realizar o pagamento: ${error.message}`,
+                content: '❌ Erro ao realizar o pagamento. Verifique os logs do servidor.',
+                ephemeral: true,
 
             });
-
+            
         }
 
     },
